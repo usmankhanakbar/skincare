@@ -1,0 +1,213 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GlowGuide — Skincare Recommendations</title>
+  <link rel="stylesheet" href="{% static 'css/style.css' %}" />
+</head>
+<body>
+  <header>
+    <h1>GlowGuide 🌸</h1>
+    <p class="tagline">Personalized skincare recommendations powered by AI</p>
+  </header>
+
+  <main>
+    <section class="form-card">
+      <form id="skinForm" enctype="multipart/form-data">
+        {% csrf_token %}
+
+        <label for="description">Describe your skin concern</label>
+        <textarea id="description" name="description" rows="4" required
+                  placeholder="e.g. I get painful pimples on my cheeks and forehead, and my skin feels oily by midday."></textarea>
+
+        <div class="grid-2">
+          <div>
+            <label for="skin_type">Skin type</label>
+            <select id="skin_type" name="skin_type" required>
+              <option value="oily">Oily</option>
+              <option value="dry">Dry</option>
+              <option value="combination">Combination</option>
+              <option value="sensitive">Sensitive</option>
+              <option value="normal">Normal</option>
+            </select>
+          </div>
+          <div>
+            <label for="age_range">Age range (optional)</label>
+            <input id="age_range" name="age_range" placeholder="e.g. 18-24" />
+          </div>
+        </div>
+
+        <label for="image">Optional: upload a photo of the affected area</label>
+        <input id="image" name="image" type="file" accept="image/*" />
+
+        <button type="submit" id="submitBtn">Get Recommendations</button>
+      </form>
+    </section>
+
+    <section id="loading" class="hidden">
+      <div class="spinner"></div>
+      <p>Analyzing your skin and finding products… (this may take ~10–20s)</p>
+    </section>
+
+    <section id="error" class="hidden error-box"></section>
+
+    <section id="results" class="hidden">
+      <div class="card">
+        <h2>Analysis</h2>
+        <p id="analysisText"></p>
+        <p id="safetyNote" class="safety"></p>
+      </div>
+
+      <div class="card">
+        <h2>Your Routine</h2>
+        <ol id="routineList"></ol>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>✅ Ingredients to look for</h3>
+          <ul id="lookForList"></ul>
+        </div>
+        <div class="card">
+          <h3>🚫 Ingredients to avoid</h3>
+          <ul id="avoidList"></ul>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Recommended Products</h2>
+        <p id="priceRange" class="price-range"></p>
+        <div id="productsGrid" class="products-grid"></div>
+      </div>
+
+      <div class="card">
+        <h2>Helpful Videos</h2>
+        <div id="videosGrid" class="videos-grid"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>
+      ⚠️ <strong>Disclaimer:</strong> GlowGuide provides educational information only and is not a substitute for professional medical advice.
+      Please consult a dermatologist for persistent or severe skin conditions.
+    </p>
+  </footer>
+
+  <script>
+    function getCookie(name) {
+      const v = document.cookie.match("(^|;)\\s*" + name + "\\s*=\\s*([^;]+)");
+      return v ? v.pop() : "";
+    }
+
+    const form = document.getElementById("skinForm");
+    const loading = document.getElementById("loading");
+    const results = document.getElementById("results");
+    const errorBox = document.getElementById("error");
+    const submitBtn = document.getElementById("submitBtn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.classList.add("hidden");
+      results.classList.add("hidden");
+      loading.classList.remove("hidden");
+      submitBtn.disabled = true;
+
+      const fd = new FormData(form);
+
+      try {
+        const res = await fetch("/api/analyze/", {
+          method: "POST",
+          headers: { "X-CSRFToken": getCookie("csrftoken") },
+          body: fd,
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || JSON.stringify(data));
+        renderResults(data);
+        results.classList.remove("hidden");
+      } catch (err) {
+        errorBox.textContent = "Error: " + err.message;
+        errorBox.classList.remove("hidden");
+      } finally {
+        loading.classList.add("hidden");
+        submitBtn.disabled = false;
+      }
+    });
+
+    function renderResults(issue) {
+      const r = issue.recommendation || {};
+      document.getElementById("analysisText").textContent = r.analysis || "—";
+      document.getElementById("safetyNote").textContent =
+        r.safety_note ? "⚠️ " + r.safety_note : "";
+
+      const routineList = document.getElementById("routineList");
+      routineList.innerHTML = "";
+      (r.routine_steps || []).forEach((s) => {
+        const li = document.createElement("li");
+        li.innerHTML = `<strong>${s.name}:</strong> ${s.description}`;
+        routineList.appendChild(li);
+      });
+
+      fillList("lookForList", r.ingredients_to_look_for);
+      fillList("avoidList", r.ingredients_to_avoid);
+
+      const pr = r.price_range_usd || {};
+      document.getElementById("priceRange").textContent =
+        pr.min && pr.max ? `Typical price range: $${pr.min} – $${pr.max} USD` : "";
+
+      const grid = document.getElementById("productsGrid");
+      grid.innerHTML = "";
+      (r.products || []).forEach((p) => {
+        grid.appendChild(productCard(p));
+      });
+      if (!r.products || !r.products.length) {
+        grid.innerHTML = "<p>No products matched your criteria at this time.</p>";
+      }
+
+      const vgrid = document.getElementById("videosGrid");
+      vgrid.innerHTML = "";
+      (r.videos || []).forEach((v) => {
+        const a = document.createElement("a");
+        a.href = v.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.className = "video-card";
+        a.innerHTML = `
+          <img src="${v.thumbnail_url}" alt="" />
+          <div class="video-meta">
+            <div class="video-title">${v.title}</div>
+            <div class="video-channel">${v.channel}</div>
+          </div>`;
+        vgrid.appendChild(a);
+      });
+    }
+
+    function fillList(id, items) {
+      const ul = document.getElementById(id);
+      ul.innerHTML = "";
+      (items || []).forEach((x) => {
+        const li = document.createElement("li");
+        li.textContent = x;
+        ul.appendChild(li);
+      });
+    }
+
+    function productCard(p) {
+      const div = document.createElement("div");
+      div.className = "product-card";
+      const price = p.price_usd ? `$${Number(p.price_usd).toFixed(2)}` : "See price";
+      div.innerHTML = `
+        <div class="source-badge ${p.source}">${p.source}</div>
+        <img src="${p.image_url || ''}" alt="" onerror="this.style.display='none'" />
+        <div class="product-title">${p.title}</div>
+        <div class="product-price">${price}</div>
+        <a class="buy-btn" href="${p.url}" target="_blank" rel="noopener sponsored">View product →</a>
+      `;
+      return div;
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,365 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Skin Solutions — personalized skincare recommendations powered by a local AI model." />
+  <title>Skin Solutions — Skincare Recommendations</title>
+  <link rel="stylesheet" href="{% static 'css/style.css' %}" />
+</head>
+<body>
+  <header>
+    <h1>Skin Solutions 🌸</h1>
+    <p class="tagline">Personalized skincare recommendations powered by AI</p>
+  </header>
+
+  <main>
+    <section class="form-card">
+      <form id="skinForm" enctype="multipart/form-data">
+        {% csrf_token %}
+
+        <label for="description">Describe your skin concern</label>
+        <textarea id="description" name="description" rows="4" required
+                  placeholder="e.g. I get painful pimples on my cheeks and forehead, and my skin feels oily by midday."></textarea>
+
+        <div class="grid-2">
+          <div>
+            <label for="skin_type">Skin type</label>
+            <select id="skin_type" name="skin_type" required>
+              <option value="oily">Oily</option>
+              <option value="dry">Dry</option>
+              <option value="combination">Combination</option>
+              <option value="sensitive">Sensitive</option>
+              <option value="normal">Normal</option>
+            </select>
+          </div>
+          <div>
+            <label for="age_range">Age range (optional)</label>
+            <input id="age_range" name="age_range" placeholder="e.g. 18-24" />
+          </div>
+        </div>
+
+        <label for="image">Optional: upload a photo of the affected area</label>
+        <input id="image" name="image" type="file" accept="image/*" />
+
+        <button type="submit" id="submitBtn">Get Recommendations</button>
+      </form>
+    </section>
+
+    <section id="loading" class="hidden" role="status" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <p>Analyzing your skin and finding products… this can take up to a minute on first run.</p>
+    </section>
+
+    <section id="error" class="hidden error-box" role="alert" aria-live="assertive"></section>
+
+    <section id="results" class="hidden">
+      <div class="card">
+        <h2>Analysis</h2>
+        <p id="analysisText"></p>
+        <p id="safetyNote" class="safety"></p>
+      </div>
+
+      <div class="card">
+        <h2>Your Routine</h2>
+        <ol id="routineList"></ol>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>✅ Ingredients to look for</h3>
+          <ul id="lookForList"></ul>
+        </div>
+        <div class="card">
+          <h3>🚫 Ingredients to avoid</h3>
+          <ul id="avoidList"></ul>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Recommended Products</h2>
+        <p id="priceRange" class="price-range"></p>
+        <div id="productsGrid" class="products-grid"></div>
+      </div>
+
+      <div class="card">
+        <h2>Helpful Videos</h2>
+        <div id="videosGrid" class="videos-grid"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>
+      ⚠️ <strong>Disclaimer:</strong> Skin Solutions provides educational information only and is not a substitute for professional medical advice.
+      Please consult a dermatologist for persistent or severe skin conditions.
+    </p>
+  </footer>
+
+  <script>
+    "use strict";
+
+    function getCookie(name) {
+      const m = document.cookie.match("(^|;)\\s*" + name + "\\s*=\\s*([^;]+)");
+      return m ? m.pop() : "";
+    }
+
+    const form = document.getElementById("skinForm");
+    const loading = document.getElementById("loading");
+    const results = document.getElementById("results");
+    const errorBox = document.getElementById("error");
+    const submitBtn = document.getElementById("submitBtn");
+
+    const REQUEST_TIMEOUT_MS = 180000; // 3 minutes for slow local LLMs
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.classList.add("hidden");
+      errorBox.textContent = "";
+      results.classList.add("hidden");
+      loading.classList.remove("hidden");
+      submitBtn.disabled = true;
+
+      const csrf = getCookie("csrftoken");
+      if (!csrf) {
+        showError("Your session expired. Please refresh the page and try again.");
+        return;
+      }
+
+      const fd = new FormData(form);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+      try {
+        const res = await fetch("/api/analyze/", {
+          method: "POST",
+          headers: { "X-CSRFToken": csrf, "Accept": "application/json" },
+          body: fd,
+          signal: controller.signal,
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+
+        renderResults(data);
+        results.classList.remove("hidden");
+      } catch (err) {
+        if (err.name === "AbortError") {
+          showError("This is taking longer than expected. Please try again in a moment.");
+        } else {
+          showError(err.message || "Something went wrong.");
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        loading.classList.add("hidden");
+        submitBtn.disabled = false;
+      }
+    });
+
+    function showError(msg) {
+      errorBox.textContent = "Error: " + msg;
+      errorBox.classList.remove("hidden");
+      errorBox.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    // ---------- rendering (no innerHTML — all textContent / createElement) ----
+
+    function renderResults(issue) {
+      const r = (issue && issue.recommendation) || {};
+
+      setText("analysisText", r.analysis || "—");
+      setText("safetyNote", r.safety_note ? "⚠️ " + r.safety_note : "");
+
+      renderRoutine(r.routine_steps || []);
+      renderStringList("lookForList", r.ingredients_to_look_for, "None specified");
+      renderStringList("avoidList", r.ingredients_to_avoid, "None specified");
+      renderPriceRange(r.price_range_usd);
+      renderProducts(r.products || []);
+      renderVideos(r.videos || []);
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
+    function renderRoutine(steps) {
+      const ol = document.getElementById("routineList");
+      ol.replaceChildren();
+      if (!steps.length) {
+        ol.appendChild(emptyLi("No routine available."));
+        return;
+      }
+      for (const s of steps) {
+        const li = document.createElement("li");
+        const strong = document.createElement("strong");
+        strong.textContent = (s.name || "Step") + ": ";
+        li.appendChild(strong);
+        li.appendChild(document.createTextNode(s.description || ""));
+        ol.appendChild(li);
+      }
+    }
+
+    function renderStringList(id, items, emptyText) {
+      const ul = document.getElementById(id);
+      ul.replaceChildren();
+      if (!items || !items.length) {
+        ul.appendChild(emptyLi(emptyText));
+        return;
+      }
+      for (const x of items) {
+        const li = document.createElement("li");
+        li.textContent = String(x);
+        ul.appendChild(li);
+      }
+    }
+
+    function emptyLi(text) {
+      const li = document.createElement("li");
+      li.className = "muted";
+      li.textContent = text;
+      return li;
+    }
+
+    function renderPriceRange(pr) {
+      const el = document.getElementById("priceRange");
+      if (!pr || pr.min == null || pr.max == null) {
+        el.textContent = "";
+        return;
+      }
+      el.textContent = `Typical price range: $${pr.min} – $${pr.max} USD`;
+    }
+
+    const ALLOWED_SOURCES = new Set(["ebay", "shopify", "aliexpress"]);
+
+    function renderProducts(products) {
+      const grid = document.getElementById("productsGrid");
+      grid.replaceChildren();
+      if (!products.length) {
+        const p = document.createElement("p");
+        p.textContent = "No products matched your criteria at this time.";
+        grid.appendChild(p);
+        return;
+      }
+      for (const p of products) grid.appendChild(productCard(p));
+    }
+
+    function productCard(p) {
+      const div = document.createElement("div");
+      div.className = "product-card";
+
+      const sourceRaw = String(p.source || "").toLowerCase();
+      const sourceClass = ALLOWED_SOURCES.has(sourceRaw) ? sourceRaw : "other";
+
+      const badge = document.createElement("div");
+      badge.className = "source-badge " + sourceClass;
+      badge.textContent = p.source || "Store";
+      div.appendChild(badge);
+
+      const imgUrl = safeHttpUrl(p.image_url);
+      if (imgUrl) {
+        const img = document.createElement("img");
+        img.src = imgUrl;
+        img.alt = "";
+        img.loading = "lazy";
+        img.referrerPolicy = "no-referrer";
+        img.addEventListener("error", () => img.remove());
+        div.appendChild(img);
+      }
+
+      const title = document.createElement("div");
+      title.className = "product-title";
+      title.textContent = p.title || "Untitled product";
+      div.appendChild(title);
+
+      const price = document.createElement("div");
+      price.className = "product-price";
+      price.textContent = formatPrice(p.price_usd);
+      div.appendChild(price);
+
+      const link = document.createElement("a");
+      link.className = "buy-btn";
+      link.textContent = "View product →";
+      const href = safeHttpUrl(p.url);
+      if (href) {
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener sponsored nofollow";
+      } else {
+        link.setAttribute("aria-disabled", "true");
+        link.style.pointerEvents = "none";
+        link.style.opacity = "0.5";
+      }
+      div.appendChild(link);
+
+      return div;
+    }
+
+    function renderVideos(videos) {
+      const grid = document.getElementById("videosGrid");
+      grid.replaceChildren();
+      if (!videos.length) {
+        const p = document.createElement("p");
+        p.textContent = "No videos available right now.";
+        grid.appendChild(p);
+        return;
+      }
+      for (const v of videos) {
+        const a = document.createElement("a");
+        const href = safeHttpUrl(v.url);
+        if (!href) continue;
+        a.href = href;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.className = "video-card";
+
+        const thumb = safeHttpUrl(v.thumbnail_url);
+        if (thumb) {
+          const img = document.createElement("img");
+          img.src = thumb;
+          img.alt = "";
+          img.loading = "lazy";
+          img.referrerPolicy = "no-referrer";
+          img.addEventListener("error", () => img.remove());
+          a.appendChild(img);
+        }
+
+        const meta = document.createElement("div");
+        meta.className = "video-meta";
+
+        const t = document.createElement("div");
+        t.className = "video-title";
+        t.textContent = v.title || "Untitled video";
+        meta.appendChild(t);
+
+        const c = document.createElement("div");
+        c.className = "video-channel";
+        c.textContent = v.channel || "";
+        meta.appendChild(c);
+
+        a.appendChild(meta);
+        grid.appendChild(a);
+      }
+    }
+
+    // ---------- utilities -----------------------------------------------------
+
+    function formatPrice(value) {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? `$${n.toFixed(2)}` : "See price";
+    }
+
+    /** Return the URL only if it's a safe http(s) URL. */
+    function safeHttpUrl(raw) {
+      if (!raw) return "";
+      try {
+        const u = new URL(String(raw), window.location.origin);
+        return u.protocol === "http:" || u.protocol === "https:" ? u.href : "";
+      } catch {
+        return "";
+      }
+    }
+  </script>
+</body>
+</html>
